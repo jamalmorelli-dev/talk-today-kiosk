@@ -135,13 +135,18 @@
       color: #f87171;
       border: 1px solid rgba(239, 68, 68, 0.4);
     }
+    .status-loading {
+      background-color: rgba(59, 130, 246, 0.2);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.4);
+    }
   </style>
 </head>
 <body>
   
   <div class="header">
     <h1 style="color: #60a5fa;">TALK TODAY USA</h1>
-    <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Zero-Latency Kiosk <span id="syncDot" style="color:red">•</span></div>
+    <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Hybrid-Latency Kiosk <span id="syncDot" style="color:red">•</span></div>
   </div>
 
   <div class="container">
@@ -167,8 +172,8 @@
     <div id="statusMsg"></div>
 
     <div class="btn-row">
-      <button class="btn-in" id="btnIn" onclick="punch('IN')" disabled>SYNCING...</button>
-      <button class="btn-out" id="btnOut" onclick="punch('OUT')" disabled>SYNCING...</button>
+      <button class="btn-in" id="btnIn" onclick="punch('IN')">CLOCK IN</button>
+      <button class="btn-out" id="btnOut" onclick="punch('OUT')">CLOCK OUT</button>
     </div>
     
   </div>
@@ -205,17 +210,9 @@
           headers: { 'Content-Type': 'text/plain;charset=utf-8' }
         });
         const data = await res.json();
-        if (data.ok && data.roster) {
+        if (data.ok && data.roster && data.roster.length > 0) {
           data.roster.forEach(t => { ROSTER[t.code] = { pin: t.pin, name: t.name }; });
           document.getElementById('syncDot').style.color = "lime";
-          document.getElementById('btnIn').disabled = false;
-          document.getElementById('btnOut').disabled = false;
-          document.getElementById('btnIn').innerText = "CLOCK IN";
-          document.getElementById('btnOut').innerText = "CLOCK OUT";
-          // If a sync error was left on screen, clear it.
-          if(document.getElementById('statusMsg').className === 'status-error') {
-            document.getElementById('statusMsg').style.display = 'none';
-          }
         } else {
           document.getElementById('syncDot').style.color = "red";
         }
@@ -256,40 +253,42 @@
       if (code.length < 1) { showStatus('error', 'Please enter your Staff Code.'); return; }
       if (pin.length < 1) { showStatus('error', 'Please enter your PIN.'); return; }
 
+      // Get Photo
+      var photoData = null;
+      if (stream && video.videoWidth > 0) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        var ctx = canvas.getContext('2d');
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        photoData = canvas.toDataURL('image/jpeg', 0.6);
+      }
+
+      var payload = {
+        code: code,
+        pin: pin,
+        action: action,
+        note: note,
+        photoData: photoData,
+        localTimestamp: new Date().toISOString(),
+        deviceId: getDeviceId(),
+        userAgent: navigator.userAgent
+      };
+
+      // FAST PATH: Zero-Latency Local Validation
       if (Object.keys(ROSTER).length > 0) {
         var teacher = ROSTER[code];
         if (!teacher) { showStatus('error', '❌ Invalid Staff Code'); return; }
         if (teacher.pin !== pin) { showStatus('error', '❌ Invalid PIN'); return; }
         
-        var tname = teacher.name;
-        
-        var photoData = null;
-        if (stream && video.videoWidth > 0) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          var ctx = canvas.getContext('2d');
-          ctx.translate(canvas.width, 0);
-          ctx.scale(-1, 1);
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
-          photoData = canvas.toDataURL('image/jpeg', 0.6);
-        }
-
-        showStatus('success', '✅ SUCCESS! ' + tname + ' clocked ' + action);
+        showStatus('success', '✅ SUCCESS! ' + teacher.name + ' clocked ' + action);
         document.getElementById('staffCode').value = '';
         document.getElementById('staffPin').value = '';
         document.getElementById('punchNote').value = '';
         
-        var payload = {
-          code: code,
-          pin: pin,
-          action: action,
-          note: note,
-          photoData: photoData,
-          localTimestamp: new Date().toISOString(),
-          deviceId: getDeviceId(),
-          userAgent: navigator.userAgent
-        };
+        // Background upload
         fetch(API_URL, {
           redirect: 'follow',
           method: 'POST',
@@ -297,18 +296,48 @@
           headers: { 'Content-Type': 'text/plain;charset=utf-8' }
         }).catch(e => console.error("Background sync failed"));
         
-      } else {
-        showStatus('error', 'Still syncing data... try again in 1 second.');
+        return;
+      }
+
+      // SLOW PATH: Fallback to Server Validation if ROSTER failed to load
+      showStatus('loading', '⏳ Validating with cloud...');
+      document.getElementById('btnIn').disabled = true;
+      document.getElementById('btnOut').disabled = true;
+
+      try {
+        const res = await fetch(API_URL, {
+          redirect: 'follow',
+          method: 'POST',
+          body: JSON.stringify(payload),
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+        });
+        const data = await res.json();
+        
+        if (data.ok) {
+          showStatus('success', '✅ SUCCESS! ' + data.teacher_name + ' clocked ' + action);
+          document.getElementById('staffCode').value = '';
+          document.getElementById('staffPin').value = '';
+          document.getElementById('punchNote').value = '';
+        } else {
+          showStatus('error', '❌ ' + (data.error || 'Validation failed'));
+        }
+      } catch (err) {
+        showStatus('error', '❌ Network error connecting to cloud');
+      } finally {
+        document.getElementById('btnIn').disabled = false;
+        document.getElementById('btnOut').disabled = false;
       }
     }
 
     function showStatus(type, msg) {
       var el = document.getElementById('statusMsg');
-      el.className = type === 'success' ? 'status-success' : 'status-error';
+      el.className = type === 'success' ? 'status-success' : (type === 'error' ? 'status-error' : 'status-loading');
       el.innerHTML = msg;
       el.style.display = 'block';
       if(statusTimeout) clearTimeout(statusTimeout);
-      statusTimeout = setTimeout(function() { el.style.display = 'none'; }, 5000);
+      if (type !== 'loading') {
+        statusTimeout = setTimeout(function() { el.style.display = 'none'; }, 5000);
+      }
     }
   </script>
 </body>
