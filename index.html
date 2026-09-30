@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Talk Today Timeclock (Local WebRTC Edition)</title>
+  <title>Talk Today Timeclock (Instant Edition)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <style>
     :root {
@@ -109,7 +109,7 @@
       background: #000;
       display: none;
       margin-bottom: 1rem;
-      transform: scaleX(-1); /* Mirror camera */
+      transform: scaleX(-1);
     }
     #canvasElement {
       display: none;
@@ -159,7 +159,7 @@
   
   <div class="header">
     <h1 style="color: #60a5fa;">TALK TODAY USA</h1>
-    <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Staff Timeclock Kiosk (WebRTC)</div>
+    <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Staff Timeclock Kiosk (Instant Edition)</div>
   </div>
 
   <div class="container">
@@ -193,18 +193,16 @@
 
   <div class="loading-overlay" id="loadingOverlay">
     <div class="spinner"></div>
-    <div style="margin-top: 1rem; font-weight: bold; font-size: 1.2rem;" id="loadingText">Processing Punch...</div>
+    <div style="margin-top: 1rem; font-weight: bold; font-size: 1.2rem;" id="loadingText">Authenticating...</div>
   </div>
 
   <script>
-    // REPLACE THIS WITH THE NEW GAS DEPLOYMENT URL
-    const API_URL = "https://script.google.com/macros/s/AKfycbyO7rX27xlvQ1r5UsODaQB1i92dgQx5esGAlZMDMFIVoAU3WUmeIhu2jP4rLnQtTZAqXg/exec";
+    const API_URL = "https://script.google.com/macros/s/AKfycbwywFVdNOyiJdFPOdnWxLQ2jLm5DMQhX66UGTrq6VT63_liUxY9btga3MSSYpdrOalfEQ/exec";
 
     var video = document.getElementById('videoElement');
     var canvas = document.getElementById('canvasElement');
     var stream = null;
 
-    // Start camera on load
     async function initCamera() {
       try {
         stream = await navigator.mediaDevices.getUserMedia({ 
@@ -218,10 +216,8 @@
         showStatus('error', 'Camera access denied. Please allow webcam permissions.');
       }
     }
-    
     window.addEventListener('load', initCamera);
 
-    // Limit input length manually
     document.getElementById('staffCode').addEventListener('input', function(e) {
       if(this.value.length > 4) this.value = this.value.slice(0, 4);
     });
@@ -243,36 +239,21 @@
       var pin = document.getElementById('staffPin').value;
       var note = document.getElementById('punchNote').value;
       
-      if (code.length < 1) {
-        showStatus('error', 'Please enter your Staff Code.');
-        return;
-      }
-      if (pin.length < 1) {
-        showStatus('error', 'Please enter your PIN.');
-        return;
-      }
+      if (code.length < 1) { showStatus('error', 'Please enter your Staff Code.'); return; }
+      if (pin.length < 1) { showStatus('error', 'Please enter your PIN.'); return; }
 
-      showLoading(true, "Capturing photo...");
+      showLoading(true, "Authenticating...");
 
-      // Capture Photo
       var photoData = null;
       if (stream && video.videoWidth > 0) {
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         var ctx = canvas.getContext('2d');
-        // Un-mirror the photo horizontally because we mirrored the video preview
         ctx.translate(canvas.width, 0);
         ctx.scale(-1, 1);
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        // Reset transform
         ctx.setTransform(1, 0, 0, 1, 0, 0);
-        
-        // Compress jpeg
         photoData = canvas.toDataURL('image/jpeg', 0.6);
-      } else {
-        showStatus('error', 'Cannot detect camera feed.');
-        showLoading(false);
-        return;
       }
 
       var payload = {
@@ -280,35 +261,44 @@
         pin: pin,
         action: action,
         note: note,
-        photoData: photoData,
+        photoData: null, // Don't send yet
         localTimestamp: new Date().toISOString(),
         deviceId: getDeviceId(),
-        userAgent: navigator.userAgent
+        userAgent: navigator.userAgent,
+        validateOnly: true
       };
 
-      showLoading(true, "Saving punch to Cloud...");
-
       try {
-        // We use text/plain to avoid CORS preflight (OPTIONS request) which GAS doesn't support
         const response = await fetch(API_URL, {
-          redirect: 'follow', // GAS redirects to script.googleusercontent.com
+          redirect: 'follow',
           method: 'POST',
           body: JSON.stringify(payload),
-          headers: {
-            'Content-Type': 'text/plain;charset=utf-8'
-          }
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' }
         });
         
         const res = await response.json();
-        showLoading(false);
         
         if (res.ok) {
-          showStatus('success', '✅ SUCCESS! ' + res.teacher_name + ' clocked ' + res.action + ' at ' + res.time);
+          // INSTANT SUCCESS UI
+          showLoading(false);
+          showStatus('success', '✅ SUCCESS! ' + res.teacher_name + ' clocked ' + res.action);
           document.getElementById('staffCode').value = '';
           document.getElementById('staffPin').value = '';
           document.getElementById('punchNote').value = '';
           setTimeout(function() { document.getElementById('statusMsg').style.display = 'none'; }, 5000);
+          
+          // BACKGROUND UPLOAD
+          payload.validateOnly = false;
+          payload.photoData = photoData;
+          fetch(API_URL, {
+            redirect: 'follow',
+            method: 'POST',
+            body: JSON.stringify(payload),
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+          }).catch(e => console.error("Background sync failed"));
+
         } else {
+          showLoading(false);
           showStatus('error', '❌ FAILED: ' + (res.error || 'Unknown error'));
         }
       } catch (err) {
@@ -331,4 +321,3 @@
   </script>
 </body>
 </html>
- 
