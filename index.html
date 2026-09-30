@@ -59,7 +59,7 @@
       text-transform: uppercase;
       letter-spacing: 0.05em;
     }
-    input[type="number"], input[type="password"], input[type="text"] {
+    input[type="text"], input[type="password"] {
       width: 100%;
       padding: 1rem;
       font-size: 1.5rem;
@@ -91,10 +91,12 @@
       color: white;
       cursor: pointer;
       box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+      transition: all 0.2s;
     }
     button:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+      background-color: #475569 !important;
     }
     .btn-in {
       background-color: var(--success);
@@ -133,26 +135,6 @@
       color: #f87171;
       border: 1px solid rgba(239, 68, 68, 0.4);
     }
-    
-    .loading-overlay {
-      position: fixed;
-      top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(15, 23, 42, 0.8);
-      display: none;
-      justify-content: center;
-      align-items: center;
-      flex-direction: column;
-      z-index: 1000;
-      backdrop-filter: blur(4px);
-    }
-    .spinner {
-      width: 50px; height: 50px;
-      border: 5px solid var(--border);
-      border-top-color: var(--primary);
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-    }
-    @keyframes spin { 100% { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -169,7 +151,7 @@
 
     <div class="form-group">
       <label class="field-label">Staff Code (4 Digits)</label>
-      <input type="number" id="staffCode" placeholder="0000" inputmode="numeric" pattern="[0-9]*" maxlength="4">
+      <input type="text" id="staffCode" placeholder="0000" inputmode="numeric" pattern="[0-9]*" maxlength="4">
     </div>
     
     <div class="form-group">
@@ -185,8 +167,8 @@
     <div id="statusMsg"></div>
 
     <div class="btn-row">
-      <button class="btn-in" onclick="punch('IN')">CLOCK IN</button>
-      <button class="btn-out" onclick="punch('OUT')">CLOCK OUT</button>
+      <button class="btn-in" id="btnIn" onclick="punch('IN')" disabled>SYNCING...</button>
+      <button class="btn-out" id="btnOut" onclick="punch('OUT')" disabled>SYNCING...</button>
     </div>
     
   </div>
@@ -197,7 +179,8 @@
     var video = document.getElementById('videoElement');
     var canvas = document.getElementById('canvasElement');
     var stream = null;
-    var ROSTER = {}; // local hashmap of code -> {pin, name}
+    var ROSTER = {}; 
+    var statusTimeout = null;
 
     async function initCamera() {
       try {
@@ -225,6 +208,14 @@
         if (data.ok && data.roster) {
           data.roster.forEach(t => { ROSTER[t.code] = { pin: t.pin, name: t.name }; });
           document.getElementById('syncDot').style.color = "lime";
+          document.getElementById('btnIn').disabled = false;
+          document.getElementById('btnOut').disabled = false;
+          document.getElementById('btnIn').innerText = "CLOCK IN";
+          document.getElementById('btnOut').innerText = "CLOCK OUT";
+          // If a sync error was left on screen, clear it.
+          if(document.getElementById('statusMsg').className === 'status-error') {
+            document.getElementById('statusMsg').style.display = 'none';
+          }
         } else {
           document.getElementById('syncDot').style.color = "red";
         }
@@ -236,14 +227,15 @@
     window.addEventListener('load', () => {
       initCamera();
       syncRoster();
-      // Keep roster fresh every 5 mins in background
       setInterval(syncRoster, 5 * 60 * 1000);
     });
 
     document.getElementById('staffCode').addEventListener('input', function(e) {
+      this.value = this.value.replace(/[^0-9]/g, '');
       if(this.value.length > 4) this.value = this.value.slice(0, 4);
     });
     document.getElementById('staffPin').addEventListener('input', function(e) {
+      this.value = this.value.replace(/[^0-9]/g, '');
       if(this.value.length > 6) this.value = this.value.slice(0, 6);
     });
 
@@ -264,16 +256,13 @@
       if (code.length < 1) { showStatus('error', 'Please enter your Staff Code.'); return; }
       if (pin.length < 1) { showStatus('error', 'Please enter your PIN.'); return; }
 
-      // ZERO LATENCY LOCAL VALIDATION!
       if (Object.keys(ROSTER).length > 0) {
         var teacher = ROSTER[code];
         if (!teacher) { showStatus('error', '❌ Invalid Staff Code'); return; }
         if (teacher.pin !== pin) { showStatus('error', '❌ Invalid PIN'); return; }
         
-        // Validated!
         var tname = teacher.name;
         
-        // Capture photo instantly
         var photoData = null;
         if (stream && video.videoWidth > 0) {
           canvas.width = video.videoWidth;
@@ -286,14 +275,11 @@
           photoData = canvas.toDataURL('image/jpeg', 0.6);
         }
 
-        // INSTANT UI RESPONSE
         showStatus('success', '✅ SUCCESS! ' + tname + ' clocked ' + action);
         document.getElementById('staffCode').value = '';
         document.getElementById('staffPin').value = '';
         document.getElementById('punchNote').value = '';
-        setTimeout(function() { document.getElementById('statusMsg').style.display = 'none'; }, 5000);
         
-        // BACKGROUND NETWORK CALL (Invisible to user)
         var payload = {
           code: code,
           pin: pin,
@@ -312,7 +298,6 @@
         }).catch(e => console.error("Background sync failed"));
         
       } else {
-        // Fallback if roster hasn't loaded yet (only happens in first 0.5s of boot)
         showStatus('error', 'Still syncing data... try again in 1 second.');
       }
     }
@@ -322,6 +307,8 @@
       el.className = type === 'success' ? 'status-success' : 'status-error';
       el.innerHTML = msg;
       el.style.display = 'block';
+      if(statusTimeout) clearTimeout(statusTimeout);
+      statusTimeout = setTimeout(function() { el.style.display = 'none'; }, 5000);
     }
   </script>
 </body>
