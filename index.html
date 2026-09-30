@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Talk Today Timeclock (Instant Edition)</title>
+  <title>Talk Today Timeclock (Zero-Latency Edition)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <style>
     :root {
@@ -159,7 +159,7 @@
   
   <div class="header">
     <h1 style="color: #60a5fa;">TALK TODAY USA</h1>
-    <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Staff Timeclock Kiosk (Instant Edition)</div>
+    <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Zero-Latency Kiosk <span id="syncDot" style="color:red">•</span></div>
   </div>
 
   <div class="container">
@@ -191,17 +191,13 @@
     
   </div>
 
-  <div class="loading-overlay" id="loadingOverlay">
-    <div class="spinner"></div>
-    <div style="margin-top: 1rem; font-weight: bold; font-size: 1.2rem;" id="loadingText">Authenticating...</div>
-  </div>
-
   <script>
-    const API_URL = "https://script.google.com/macros/s/AKfycbwywFVdNOyiJdFPOdnWxLQ2jLm5DMQhX66UGTrq6VT63_liUxY9btga3MSSYpdrOalfEQ/exec";
+    const API_URL = "https://script.google.com/macros/s/AKfycbwyc_5wUtSiBD4_AGmLtKiOW9jHNe6j8HngnSIU4F7KCj44zRPlNXinpuDsuVBphj53wg/exec";
 
     var video = document.getElementById('videoElement');
     var canvas = document.getElementById('canvasElement');
     var stream = null;
+    var ROSTER = {}; // local hashmap of code -> {pin, name}
 
     async function initCamera() {
       try {
@@ -213,10 +209,36 @@
         video.style.display = 'block';
       } catch (err) {
         console.error("Camera error:", err);
-        showStatus('error', 'Camera access denied. Please allow webcam permissions.');
       }
     }
-    window.addEventListener('load', initCamera);
+    
+    async function syncRoster() {
+      try {
+        document.getElementById('syncDot').style.color = "yellow";
+        const res = await fetch(API_URL, {
+          redirect: 'follow',
+          method: 'POST',
+          body: JSON.stringify({ action: 'GET_ROSTER' }),
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+        });
+        const data = await res.json();
+        if (data.ok && data.roster) {
+          data.roster.forEach(t => { ROSTER[t.code] = { pin: t.pin, name: t.name }; });
+          document.getElementById('syncDot').style.color = "lime";
+        } else {
+          document.getElementById('syncDot').style.color = "red";
+        }
+      } catch(e) {
+        document.getElementById('syncDot').style.color = "red";
+      }
+    }
+
+    window.addEventListener('load', () => {
+      initCamera();
+      syncRoster();
+      // Keep roster fresh every 5 mins in background
+      setInterval(syncRoster, 5 * 60 * 1000);
+    });
 
     document.getElementById('staffCode').addEventListener('input', function(e) {
       if(this.value.length > 4) this.value = this.value.slice(0, 4);
@@ -242,68 +264,56 @@
       if (code.length < 1) { showStatus('error', 'Please enter your Staff Code.'); return; }
       if (pin.length < 1) { showStatus('error', 'Please enter your PIN.'); return; }
 
-      showLoading(true, "Authenticating...");
+      // ZERO LATENCY LOCAL VALIDATION!
+      if (Object.keys(ROSTER).length > 0) {
+        var teacher = ROSTER[code];
+        if (!teacher) { showStatus('error', '❌ Invalid Staff Code'); return; }
+        if (teacher.pin !== pin) { showStatus('error', '❌ Invalid PIN'); return; }
+        
+        // Validated!
+        var tname = teacher.name;
+        
+        // Capture photo instantly
+        var photoData = null;
+        if (stream && video.videoWidth > 0) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          var ctx = canvas.getContext('2d');
+          ctx.translate(canvas.width, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          photoData = canvas.toDataURL('image/jpeg', 0.6);
+        }
 
-      var photoData = null;
-      if (stream && video.videoWidth > 0) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        var ctx = canvas.getContext('2d');
-        ctx.translate(canvas.width, 0);
-        ctx.scale(-1, 1);
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        photoData = canvas.toDataURL('image/jpeg', 0.6);
-      }
-
-      var payload = {
-        code: code,
-        pin: pin,
-        action: action,
-        note: note,
-        photoData: null, // Don't send yet
-        localTimestamp: new Date().toISOString(),
-        deviceId: getDeviceId(),
-        userAgent: navigator.userAgent,
-        validateOnly: true
-      };
-
-      try {
-        const response = await fetch(API_URL, {
+        // INSTANT UI RESPONSE
+        showStatus('success', '✅ SUCCESS! ' + tname + ' clocked ' + action);
+        document.getElementById('staffCode').value = '';
+        document.getElementById('staffPin').value = '';
+        document.getElementById('punchNote').value = '';
+        setTimeout(function() { document.getElementById('statusMsg').style.display = 'none'; }, 5000);
+        
+        // BACKGROUND NETWORK CALL (Invisible to user)
+        var payload = {
+          code: code,
+          pin: pin,
+          action: action,
+          note: note,
+          photoData: photoData,
+          localTimestamp: new Date().toISOString(),
+          deviceId: getDeviceId(),
+          userAgent: navigator.userAgent
+        };
+        fetch(API_URL, {
           redirect: 'follow',
           method: 'POST',
           body: JSON.stringify(payload),
           headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-        });
+        }).catch(e => console.error("Background sync failed"));
         
-        const res = await response.json();
-        
-        if (res.ok) {
-          // INSTANT SUCCESS UI
-          showLoading(false);
-          showStatus('success', '✅ SUCCESS! ' + res.teacher_name + ' clocked ' + res.action);
-          document.getElementById('staffCode').value = '';
-          document.getElementById('staffPin').value = '';
-          document.getElementById('punchNote').value = '';
-          setTimeout(function() { document.getElementById('statusMsg').style.display = 'none'; }, 5000);
-          
-          // BACKGROUND UPLOAD
-          payload.validateOnly = false;
-          payload.photoData = photoData;
-          fetch(API_URL, {
-            redirect: 'follow',
-            method: 'POST',
-            body: JSON.stringify(payload),
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' }
-          }).catch(e => console.error("Background sync failed"));
-
-        } else {
-          showLoading(false);
-          showStatus('error', '❌ FAILED: ' + (res.error || 'Unknown error'));
-        }
-      } catch (err) {
-        showLoading(false);
-        showStatus('error', '❌ NETWORK ERROR: ' + err.message);
+      } else {
+        // Fallback if roster hasn't loaded yet (only happens in first 0.5s of boot)
+        showStatus('error', 'Still syncing data... try again in 1 second.');
       }
     }
 
@@ -312,11 +322,6 @@
       el.className = type === 'success' ? 'status-success' : 'status-error';
       el.innerHTML = msg;
       el.style.display = 'block';
-    }
-
-    function showLoading(show, text) {
-      document.getElementById('loadingOverlay').style.display = show ? 'flex' : 'none';
-      if (text) document.getElementById('loadingText').innerText = text;
     }
   </script>
 </body>
